@@ -39,10 +39,9 @@ app = typer.Typer(add_completion=False)
 
 MODEL          = "text-embedding-3-large"
 ENDPOINT       = "/v1/embeddings"   
-MAX_PER_BATCH  = 50_000           # hard OpenAI limit
-JSONL_TEMPLATE = '{{"model":"{m}","input":{t},"encoding_format":"float","custom_id":"{i}"}}'
+MAX_PER_BATCH  = 10_000           # hard OpenAI limit
+JSONL_TEMPLATE = '{{"custom_id":"{i}","method":"POST","url":"/v1/embeddings","body":{{"model":"{m}","input":{t},"encoding_format":"float"}}}}'
 
-# --------------------------------------------------------------------------- #
 def load_tsv(tsv: Path) -> List[Tuple[str, str]]:
     docs: List[Tuple[str, str]] = []
     with tsv.open() as f:
@@ -52,7 +51,6 @@ def load_tsv(tsv: Path) -> List[Tuple[str, str]]:
                 docs.append((parts[0], parts[1]))
     return docs
 
-# --------------------------------------------------------------------------- #
 @app.command()
 def main(
     input:     Path = typer.Option(..., help="TSV with id <TAB> text"),
@@ -70,7 +68,7 @@ def main(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     docs = load_tsv(input)
-    docs = docs[:100000]
+    docs = docs[:10000]
     typer.echo(f"Loaded {len(docs):,} rows – creating batch jobs …")
 
     for slice_idx, start in enumerate(range(0, len(docs), slice_len)):
@@ -78,7 +76,6 @@ def main(
         request_path   = out_dir / f"req_{slice_idx:05d}.jsonl"
         mapping_path   = out_dir / f"req_{slice_idx:05d}.mapping.json"
 
-        # --- write JSONL request file -------------------------------------- #
         with request_path.open("w") as jf:
             for doc_id, text in chunk:
                 # --- Exact token check ---
@@ -89,10 +86,10 @@ def main(
 
                 line = JSONL_TEMPLATE.format(m=MODEL,
                                              t=json.dumps(text),
-                                             i=doc_id)
+                                             i=doc_id,
+                                             u=ENDPOINT)
                 jf.write(line + "\n")
 
-        # --- upload file & create batch job -------------------------------- #
         file_obj = client.files.create(file=request_path, purpose="batch")
         batch    = client.batches.create(
             input_file_id   = file_obj.id,
@@ -100,7 +97,6 @@ def main(
             completion_window = window
         )
 
-        # --- save lightweight mapping -------------------------------------- #
         mapping = dict(batch_id=batch.id,
                        file_id=file_obj.id,
                        slice=slice_idx,
@@ -109,7 +105,6 @@ def main(
 
         typer.echo(f"✓ queued batch {batch.id} ({len(chunk):,} docs)")
 
-        # --- Delete the request file as it's no longer needed ----------- #
         try:
             request_path.unlink()
         except OSError as e:

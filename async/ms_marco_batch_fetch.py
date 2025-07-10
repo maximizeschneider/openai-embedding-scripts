@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """
 Poll every *.mapping.json created by ms_marco_batch_submit.py.
 When a batch finishes, download its *output_file_id* and write an
@@ -7,7 +6,7 @@ NPZ shard holding `ids`, `texts`, `vectors`.
 Usage example
 -------------
 python ms_marco_batch_fetch.py \
-  --mappings /Volumes/T7/Data/MSMarco/batch_jobs \
+  --mappings /Volumes/T7/Data/MSMarco/batch-jobs \
   --input-tsv /Volumes/T7/Data/MSMarco/collection.tsv\
   --out-dir   /Volumes/T7/Data/MSMarco/batch-embeddings \
   --shard-size 10000
@@ -29,7 +28,6 @@ POLL_SECS   = 30          # polling interval
 
 app = typer.Typer(add_completion=False)
 
-# --------------------------------------------------------------------------- #
 class ShardWriter:
     def __init__(self, out_dir: Path, shard_size: int = 10_000):
         self.out_dir, self.shard_size = out_dir, shard_size
@@ -56,10 +54,10 @@ class ShardWriter:
             texts=np.asarray(self.texts),
             vectors=np.vstack(self.vecs).astype(np.float32)
         )
+        typer.echo(f"Wrote {fn}")
         self.idx += 1
         self.reset()
 
-# --------------------------------------------------------------------------- #
 def load_tsv(tsv: Path) -> Dict[str, str]:
     id2text = {}
     with tsv.open(encoding='utf-8') as f:
@@ -69,20 +67,20 @@ def load_tsv(tsv: Path) -> Dict[str, str]:
                 id2text[parts[0]] = parts[1]
     return id2text
 
-# --------------------------------------------------------------------------- #
 def parse_result_file(raw: str):
     """Yield (custom_id, embedding) tuples."""
     for ln in raw.splitlines():
         if not ln.strip():
             continue
         obj = json.loads(ln)
-        if obj.get("status") != 200:
+        if obj["response"]["status_code"] != 200:
+            typer.echo(f"⚠️  Warning: Failed row: {obj['id']}")
             continue  # skip failed rows
+            
         cid = obj.get("custom_id")
         vec = obj["response"]["body"]["data"][0]["embedding"]
         yield cid, np.asarray(vec, dtype=np.float32)
 
-# --------------------------------------------------------------------------- #
 @app.command()
 def main(
     mappings:   Path = typer.Option(..., help="Dir with *.mapping.json"),
@@ -112,9 +110,10 @@ def main(
     while pending:
         for mf, meta in list(pending.items()):
             try:
-                job = client.batches.retrieve(meta["batch_id"])
+                batch_id = meta["batch_id"]
+                job = client.batches.retrieve(batch_id)
             except OpenAIError as err:
-                typer.echo(f"{meta['batch_id']} → {err}")
+                typer.echo(f"{batch_id} → {err}")
                 continue
 
             if job.status in ("validating", "in_progress", "finalizing"):
@@ -131,17 +130,15 @@ def main(
                 continue
 
             if job.status == "completed":
-                # Record API timestamp
-                last_completed_ts = job.completed_at
+                # Record latest API timestamp
+                if last_completed_ts is None:
+                    last_completed_ts = job.completed_at
+                else:
+                    last_completed_ts = max(last_completed_ts, job.completed_at)
 
-                # ---------------- download result file -------------------- #
-                res_bytes = client.files.content(job.output_file_id)
-                raw = (
-                    res_bytes.decode()
-                    if isinstance(res_bytes, (bytes, bytearray))
-                    else res_bytes
-                )
-                for cid, vec in parse_result_file(raw):
+                fileResponse = client.files.content(job.output_file_id)
+                fileContent = fileResponse.text
+                for cid, vec in parse_result_file(fileContent):
                     original_text = id2text.get(cid)
                     if original_text is None:
                         typer.echo(f"⚠️  Warning: Could not find original text for ID '{cid}' in input TSV. Skipping.", err=True)
@@ -162,7 +159,7 @@ def main(
         finish_str = finish_dt.strftime("%Y-%m-%d %H:%M:%S")
         typer.echo(f"Last batch processed at (API time): {finish_str}")
     else:
-        typer.echo("All done – embeddings saved.")
+        typer.echo("No complete timestamp available. Please check the API status.")
 
 if __name__ == "__main__":
     app()

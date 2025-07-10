@@ -50,7 +50,6 @@ VECTOR_DIMS = 3072        # embedding dimensionality
 MAX_TOKENS = 8191
 ENCODING = tiktoken.encoding_for_model(MODEL) # Get the tokenizer encoding
 
-# --------------------------------------------------------------------------- #
 # asyncio
 # async methods are corotines that happen inside the event loop
 # wait for results of other async operations without blocking the event loop
@@ -64,7 +63,6 @@ ENCODING = tiktoken.encoding_for_model(MODEL) # Get the tokenizer encoding
 # asyncio.Queue.task_done is used to indicate that a batch has been processed
 # asyncio.Queue.put(None) is used to put a sentinel into the queue to indicate that the producer has finished
 
-# --------------------------------------------------------------------------- #
 class ShardWriter:
     """Write embeddings to compressed NPZ shards of fixed row count."""
 
@@ -99,7 +97,6 @@ class ShardWriter:
         self.idx += 1
         self.reset()
 
-# --------------------------------------------------------------------------- #
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=60),
     stop=stop_after_attempt(5),
@@ -109,7 +106,6 @@ async def embed_batch(client: AsyncOpenAI, inputs: List[str]):
     resp = await client.embeddings.create(model=MODEL, input=inputs)
     return [np.asarray(obj.embedding, dtype=np.float32) for obj in resp.data]
 
-# --------------------------------------------------------------------------- #
 async def consumer(
     queue: asyncio.Queue,
     rpm_limiter: AsyncLimiter,
